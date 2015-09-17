@@ -59,6 +59,9 @@
 #define DEVICE_BASE_NAME "mdm"
 #define DEVICE_NAME_LENGTH \
 	(sizeof(DEVICE_BASE_NAME) + MAX_DEVICE_DIGITS)
+#if defined(CONFIG_PANTECH_SMB347_CHARGER)
+extern unsigned int pantech_charging_status(void);
+#endif
 
 #define RD_BUF_SIZE			100
 #define SFR_MAX_RETRIES		10
@@ -752,6 +755,11 @@ static int mdm_subsys_shutdown(const struct subsys_desc *crashed_subsys)
 	 container_of(crashed_subsys, struct mdm_device, mdm_subsys);
 	struct mdm_modem_drv *mdm_drv = &mdev->mdm_data;
 
+#if defined(CONFIG_PANTECH_SMB347_CHARGER)
+	// if offline charging mode, skip func
+	if(pantech_charging_status()) 
+		return 0;
+#endif
 	pr_debug("%s: ssr on modem id %d\n", __func__,
 			 mdev->mdm_data.device_id);
 
@@ -784,6 +792,11 @@ static int mdm_subsys_powerup(const struct subsys_desc *crashed_subsys)
 					 mdm_subsys);
 	struct mdm_modem_drv *mdm_drv = &mdev->mdm_data;
 
+#if defined(CONFIG_PANTECH_SMB347_CHARGER)
+	// if offline charging mode, skip func
+	if(pantech_charging_status()) 
+		return 0;
+#endif
 	pr_debug("%s: ssr on modem id %d\n",
 			 __func__, mdev->mdm_data.device_id);
 

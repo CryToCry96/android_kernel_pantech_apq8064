@@ -26,6 +26,7 @@
 #include <mach/cpufreq.h>
 
 static int enabled;
+static int ecocpu;
 static struct msm_thermal_data msm_thermal_info;
 static uint32_t limited_max_freq = MSM_CPUFREQ_NO_LIMIT;
 static struct delayed_work check_temp_work;
@@ -275,6 +276,20 @@ static struct kernel_param_ops module_ops = {
 module_param_cb(enabled, &module_ops, &enabled, 0644);
 MODULE_PARM_DESC(enabled, "enforce thermal limit on cpu");
 
+static int ecocpu;
+static int set_ecocpu(const char *val, const struct kernel_param *kp)
+{
+	int ret = 0;
+	ret = param_set_bool(val, kp);
+	pr_info("msm_thermal: ecocpu = %d\n", ecocpu);
+	return ret;
+}
+static struct kernel_param_ops module_ops_ecocpu = {
+	.set = set_ecocpu,
+	.get = param_get_bool,
+};
+module_param_cb(ecocpu, &module_ops_ecocpu, &ecocpu, 0644);
+MODULE_PARM_DESC(ecocpu, "ecocpu on");
 
 /* Call with core_control_mutex locked */
 static int __cpuinit update_offline_cores(int val)
@@ -431,6 +446,7 @@ int __devinit msm_thermal_init(struct msm_thermal_data *pdata)
 	memcpy(&msm_thermal_info, pdata, sizeof(struct msm_thermal_data));
 
 	enabled = 1;
+    ecocpu=0;
 	core_control_enabled = 1;
 	INIT_DELAYED_WORK(&check_temp_work, check_temp);
 	schedule_delayed_work(&check_temp_work, 0);

@@ -373,6 +373,7 @@ extern int usb_string_ids_tab(struct usb_composite_dev *c,
 extern int usb_string_ids_n(struct usb_composite_dev *c, unsigned n);
 
 
+int android_get_udc_state(void);
 /* messaging utils */
 #define DBG(d, fmt, args...) \
 	dev_dbg(&(d)->gadget->dev , fmt , ## args)

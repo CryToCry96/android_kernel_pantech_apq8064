@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2013,2015 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -37,7 +37,21 @@
 #include <linux/wakelock.h>
 #include <linux/suspend.h>
 #include "wcd9310.h"
-#include "wcdcal-hwdep.h"
+
+#ifdef CONFIG_SKY_SND_EXTERNAL_AMP //YDA165
+#if ( ( defined(CONFIG_SKY_EF51S_BOARD) || defined(CONFIG_SKY_EF51K_BOARD) || defined(CONFIG_SKY_EF51L_BOARD) ) && (CONFIG_BOARD_VER > CONFIG_WS10) ) || \
+	defined(CONFIG_SKY_EF52S_BOARD) || defined(CONFIG_SKY_EF52K_BOARD) || defined(CONFIG_SKY_EF52L_BOARD) || defined(CONFIG_SKY_EF52W_BOARD)
+#include "../msm/pantech_snd_extamp_yda165.h"
+#else
+#include "../msm/sky_snd_fab2210.h"
+#endif
+#endif /* CONFIG_SKY_SND_EXTERNAL_AMP */
+
+#ifdef CONFIG_SKY_SND_HEADSET_BUTTON_ADC  //20121119 jhsong : #8378522# test code headset button adc level check
+#include <linux/proc_fs.h>
+struct proc_dir_entry *wcd9310_headset_button_dir;
+static s32 mv_s_backup = 0;
+#endif
 
 static int cfilt_adjust_ms = 10;
 module_param(cfilt_adjust_ms, int, 0644);
@@ -346,7 +360,6 @@ struct tabla_priv {
 	/* Work to perform MBHC Firmware Read */
 	struct delayed_work mbhc_firmware_dwork;
 	const struct firmware *mbhc_fw;
-	struct firmware_cal *mbhc_cal;
 
 	/* num of slim ports required */
 	struct tabla_codec_dai_data dai[NUM_CODEC_DAIS];
@@ -390,8 +403,6 @@ struct tabla_priv {
 	struct dentry *debugfs_poke;
 	struct dentry *debugfs_mbhc;
 #endif
-	/* cal info for codec */
-	struct fw_info *fw_data;
 };
 
 static const u32 comp_shift[] = {
@@ -472,6 +483,15 @@ static unsigned short tx_digital_gain_reg[] = {
 	TABLA_A_CDC_TX9_VOL_CTL_GAIN,
 	TABLA_A_CDC_TX10_VOL_CTL_GAIN,
 };
+
+//HDJ_LS4_Sound_20120503
+static int headset_jack_status = 0; 
+
+int wcd9310_headsetJackStatusGet(void)
+{
+	return headset_jack_status;
+}
+//HDJ_LS4_Sound_20120503_END
 
 static int tabla_codec_enable_charge_pump(struct snd_soc_dapm_widget *w,
 		struct snd_kcontrol *kcontrol, int event)
@@ -2408,18 +2428,18 @@ static void tabla_codec_start_hs_polling(struct snd_soc_codec *codec)
 		snd_soc_write(codec, TABLA_A_CDC_MBHC_VOLT_B5_CTL, 0x00);
 	} else if (unlikely(mbhc_state == MBHC_STATE_POTENTIAL)) {
 		pr_debug("%s recovering MBHC state machine\n", __func__);
-		tabla->mbhc_state = MBHC_STATE_POTENTIAL_RECOVERY;
-		/* set to max button press threshold */
+			tabla->mbhc_state = MBHC_STATE_POTENTIAL_RECOVERY;
+			/* set to max button press threshold */
 		snd_soc_write(codec, TABLA_A_CDC_MBHC_VOLT_B2_CTL, 0x7F);
 		snd_soc_write(codec, TABLA_A_CDC_MBHC_VOLT_B1_CTL, 0xFF);
-		snd_soc_write(codec, TABLA_A_CDC_MBHC_VOLT_B4_CTL,
-			      (TABLA_IS_1_X(tabla_core->version) ?
-			       0x07 : 0x7F));
+			snd_soc_write(codec, TABLA_A_CDC_MBHC_VOLT_B4_CTL,
+				      (TABLA_IS_1_X(tabla_core->version) ?
+				       0x07 : 0x7F));
 		snd_soc_write(codec, TABLA_A_CDC_MBHC_VOLT_B3_CTL, 0xFF);
-		/* set to max */
+			/* set to max */
 		snd_soc_write(codec, TABLA_A_CDC_MBHC_VOLT_B6_CTL, 0x7F);
 		snd_soc_write(codec, TABLA_A_CDC_MBHC_VOLT_B5_CTL, 0xFF);
-	}
+		}
 
 	snd_soc_write(codec, TABLA_A_CDC_MBHC_EN_CTL, 0x1);
 	snd_soc_update_bits(codec, TABLA_A_CDC_MBHC_CLK_CTL, 0x8, 0x0);
@@ -3003,6 +3023,10 @@ static int tabla_codec_enable_rx_bias(struct snd_soc_dapm_widget *w,
 
 	pr_debug("%s %d\n", __func__, event);
 
+#ifdef CONFIG_SKY_SND_MODIFIER
+	mdelay(40); // QCOM: Adding delay here is removing tick noise
+#endif
+
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
 		tabla_enable_rx_bias(codec, 1);
@@ -3091,7 +3115,7 @@ static int tabla_codec_enable_anc(struct snd_soc_dapm_widget *w,
 	const char *filename;
 	const struct firmware *fw;
 	int i;
-	int ret =0;
+	int ret;
 	int num_anc_slots;
 	struct anc_header *anc_head;
 	struct tabla_priv *tabla = snd_soc_codec_get_drvdata(codec);
@@ -3100,9 +3124,6 @@ static int tabla_codec_enable_anc(struct snd_soc_dapm_widget *w,
 	u32 *anc_ptr;
 	u16 reg;
 	u8 mask, val, old_val;
-	size_t cal_size;
-	const void *data;
-	struct firmware_cal *hwdep_cal = NULL;
 
 	pr_debug("%s: DAPM Event %d ANC func is %d\n",
 		 __func__, event, tabla->anc_func);
@@ -3114,40 +3135,24 @@ static int tabla_codec_enable_anc(struct snd_soc_dapm_widget *w,
 	case SND_SOC_DAPM_PRE_PMU:
 
 		filename = "wcd9310/wcd9310_anc.bin";
-		hwdep_cal = wcdcal_get_fw_cal(tabla->fw_data, WCD9XXX_ANC_CAL);
-		if (hwdep_cal) {
-			data = hwdep_cal->data;
-			cal_size = hwdep_cal->size;
-			dev_dbg(codec->dev, "%s: using hwdep calibration\n",
-				__func__);
-		} else {
-			ret = request_firmware(&fw, filename, codec->dev);
-			if (ret != 0) {
-				dev_err(codec->dev, "Failed to acquire ANC data: %d\n",
-					ret);
-				return -ENODEV;
-			}
-			if (!fw) {
-				dev_err(codec->dev, "failed to get anc fw");
-				return -ENODEV;
-			}
-			data = fw->data;
-			cal_size = fw->size;
-			dev_dbg(codec->dev, "%s: using request_firmware calibration\n",
-					__func__);
 
+		ret = request_firmware(&fw, filename, codec->dev);
+		if (ret != 0) {
+			dev_err(codec->dev, "Failed to acquire ANC data: %d\n",
+				ret);
+			return -ENODEV;
 		}
 
-		if (cal_size < sizeof(struct anc_header)) {
+		if (fw->size < sizeof(struct anc_header)) {
 			dev_err(codec->dev, "Not enough data\n");
-			ret = -ENOMEM;
-			goto err;
+			release_firmware(fw);
+			return -ENOMEM;
 		}
 
 		/* First number is the number of register writes */
-		anc_head = (struct anc_header *)(data);
-		anc_ptr = (u32 *)((u32)data + sizeof(struct anc_header));
-		anc_size_remaining = cal_size - sizeof(struct anc_header);
+		anc_head = (struct anc_header *)(fw->data);
+		anc_ptr = (u32 *)((u32)fw->data + sizeof(struct anc_header));
+		anc_size_remaining = fw->size - sizeof(struct anc_header);
 		num_anc_slots = anc_head->num_anc_slots;
 
 		if (tabla->anc_slot >= num_anc_slots) {
@@ -3160,8 +3165,8 @@ static int tabla_codec_enable_anc(struct snd_soc_dapm_widget *w,
 
 			if (anc_size_remaining < TABLA_PACKED_REG_SIZE) {
 				dev_err(codec->dev, "Invalid register format\n");
-				ret = -EINVAL;
-				goto err;
+				release_firmware(fw);
+				return -EINVAL;
 			}
 			anc_writes_size = (u32)(*anc_ptr);
 			anc_size_remaining -= sizeof(u32);
@@ -3170,8 +3175,8 @@ static int tabla_codec_enable_anc(struct snd_soc_dapm_widget *w,
 			if (anc_writes_size * TABLA_PACKED_REG_SIZE
 				> anc_size_remaining) {
 				dev_err(codec->dev, "Invalid register format\n");
-				ret = -EINVAL;
-				goto err;
+				release_firmware(fw);
+				return -ENOMEM;
 			}
 
 			if (tabla->anc_slot == i)
@@ -3183,9 +3188,8 @@ static int tabla_codec_enable_anc(struct snd_soc_dapm_widget *w,
 		}
 		if (i == num_anc_slots) {
 			dev_err(codec->dev, "Selected ANC slot not present\n");
-			ret = -EINVAL;
-			goto err;
-
+			release_firmware(fw);
+			return -ENOMEM;
 		}
 
 		for (i = 0; i < anc_writes_size; i++) {
@@ -3195,9 +3199,7 @@ static int tabla_codec_enable_anc(struct snd_soc_dapm_widget *w,
 			snd_soc_write(codec, reg, (old_val & ~mask) |
 				(val & mask));
 		}
-		if (!hwdep_cal)
-			release_firmware(fw);
-
+		release_firmware(fw);
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
 		snd_soc_update_bits(codec, TABLA_A_CDC_ANC1_CTL, 0x01, 0x00);
@@ -3209,11 +3211,6 @@ static int tabla_codec_enable_anc(struct snd_soc_dapm_widget *w,
 		break;
 	}
 	return 0;
-err:
-	if (!hwdep_cal)
-		release_firmware(fw);
-	return ret;
-
 }
 
 static int tabla_hph_pa_event(struct snd_soc_dapm_widget *w,
@@ -3234,9 +3231,31 @@ static int tabla_hph_pa_event(struct snd_soc_dapm_widget *w,
 			tabla_codec_switch_micbias(codec, 1);
 			TABLA_RELEASE_LOCK(tabla->codec_resource_lock);
 		}
+
+#ifdef CONFIG_SKY_SND_EXTERNAL_AMP //YDA165
+		if (!strncmp(w->name, "HPHR", 4)) {
+#if ( ( defined(CONFIG_SKY_EF51S_BOARD) || defined(CONFIG_SKY_EF51K_BOARD) || defined(CONFIG_SKY_EF51L_BOARD) ) && (CONFIG_BOARD_VER > CONFIG_WS10) ) || \
+	defined(CONFIG_SKY_EF52S_BOARD) || defined(CONFIG_SKY_EF52K_BOARD) || defined(CONFIG_SKY_EF52L_BOARD) || defined(CONFIG_SKY_EF52W_BOARD)
+		snd_extamp_api_SetDevice(1, SND_DEVICE_HEADSET_RX);
+#else
+		snd_subsystem_hp_poweron();
+#endif		
+		}	
+#endif /* CONFIG_SKY_SND_EXTERNAL_AMP */
 		break;
 
 	case SND_SOC_DAPM_POST_PMD:
+#ifdef CONFIG_SKY_SND_EXTERNAL_AMP //YDA165
+		if (!strncmp(w->name, "HPHR", 4)) {
+#if ( ( defined(CONFIG_SKY_EF51S_BOARD) || defined(CONFIG_SKY_EF51K_BOARD) || defined(CONFIG_SKY_EF51L_BOARD) ) && (CONFIG_BOARD_VER > CONFIG_WS10) ) || \
+	defined(CONFIG_SKY_EF52S_BOARD) || defined(CONFIG_SKY_EF52K_BOARD) || defined(CONFIG_SKY_EF52L_BOARD) || defined(CONFIG_SKY_EF52W_BOARD)
+		snd_extamp_api_SetDevice(0, SND_DEVICE_HEADSET_RX);		
+#else
+		snd_subsystem_standby(SYSTEM_OFF);
+#endif		
+	}	
+#endif /* CONFIG_SKY_SND_EXTERNAL_AMP */
+
 		/* schedule work is required because at the time HPH PA DAPM
 		 * event callback is called by DAPM framework, CODEC dapm mutex
 		 * would have been locked while snd_soc_jack_report also
@@ -4179,6 +4198,7 @@ static int tabla_startup(struct snd_pcm_substream *substream,
 	return 0;
 }
 
+#if 0 // jmlee SR Case No 00926132 Watch dog Reset by slimbus disable error... Patch 
 static void tabla_shutdown(struct snd_pcm_substream *substream,
 		struct snd_soc_dai *dai)
 {
@@ -4207,6 +4227,7 @@ static void tabla_shutdown(struct snd_pcm_substream *substream,
 		pm_runtime_put(tabla_core->dev->parent);
 	}
 }
+#endif
 
 int tabla_mclk_enable(struct snd_soc_codec *codec, int mclk_enable, bool dapm)
 {
@@ -4332,7 +4353,7 @@ static int tabla_set_channel_map(struct snd_soc_dai *dai,
 		}
 	} else if (dai->id == AIF1_CAP || dai->id == AIF2_CAP ||
 		   dai->id == AIF3_CAP) {
-		tabla->dai[dai->id - 1].ch_tot = tx_num;
+			tabla->dai[dai->id - 1].ch_tot = tx_num;
 		/* All channels are already active.
 		 * do not reset ch_act flag
 		 */
@@ -4392,10 +4413,32 @@ static int tabla_get_channel_map(struct snd_soc_dai *dai,
 		}
 	} else if (dai->id == AIF2_CAP) {
 		*tx_num = tabla_dai[dai->id - 1].capture.channels_max;
+#if 0 // SD epos check FC miss
 		tx_slot[0] = tx_ch[cnt];
 		tx_slot[1] = tx_ch[1 + cnt];
 		tx_slot[2] = tx_ch[5 + cnt];
 		tx_slot[3] = tx_ch[3 + cnt];
+#else
+#if 1 // jmlee 1031 case 00896266 SLIM TX3 --> SLIM TX10, because echo reference uses SLIM TX3
+#if defined(CONFIG_SKY_EF51S_BOARD) || defined(CONFIG_SKY_EF51K_BOARD) || defined(CONFIG_SKY_EF51L_BOARD)
+		tx_slot[0] = tx_ch[1 + cnt];
+		tx_slot[1] = tx_ch[9 + cnt];
+		tx_slot[2] = tx_ch[8 + cnt];
+		tx_slot[3] = tx_ch[0 + cnt];		
+#else
+		tx_slot[0] = tx_ch[1+cnt];
+		tx_slot[1] = tx_ch[9+ cnt]; //
+		tx_slot[2] = tx_ch[8 + cnt];
+#endif	
+#else
+// now EPOS ADC3 --> DEC9 --> tx9
+//		tx_slot[0] = tx_ch[1+cnt];
+		tx_slot[0] = tx_ch[1+cnt];    // jmlee epos check  "to make epos to use TX9 '136'"
+		tx_slot[1] = tx_ch[2+ cnt];
+		tx_slot[2] = tx_ch[8 + cnt];
+		//tx_slot[3] = tx_ch[3 + cnt];
+#endif		
+#endif
 
 	} else if (dai->id == AIF3_PB) {
 		*rx_num = tabla_dai[dai->id - 1].playback.channels_max;
@@ -4479,12 +4522,18 @@ static struct snd_soc_dapm_widget tabla_dapm_aif_out_widgets[] = {
 	SND_SOC_DAPM_AIF_OUT_E("SLIM TX8", "AIF1 Capture", 0, SND_SOC_NOPM, 8,
 				0, tabla_codec_enable_slimtx,
 				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
-
+#if 1 // jmlee 1031 epose 
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX9", "AIF2 Capture", 0, SND_SOC_NOPM, 9,
+#else
 	SND_SOC_DAPM_AIF_OUT_E("SLIM TX9", "AIF1 Capture", 0, SND_SOC_NOPM, 9,
+#endif	
 				0, tabla_codec_enable_slimtx,
 				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
-
+#if 1 // jmlee 1031 case 00896266 SLIM TX3 --> SLIM TX10, because echo reference uses SLIM TX3
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX10", "AIF2 Capture", 0, SND_SOC_NOPM, 10,
+#else
 	SND_SOC_DAPM_AIF_OUT_E("SLIM TX10", "AIF1 Capture", 0, SND_SOC_NOPM, 10,
+#endif	
 				0, tabla_codec_enable_slimtx,
 				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
 };
@@ -4768,7 +4817,9 @@ static int tabla_hw_params(struct snd_pcm_substream *substream,
 
 static struct snd_soc_dai_ops tabla_dai_ops = {
 	.startup = tabla_startup,
+#if 0 // jmlee SR Case No 00926132 Watch dog Reset by slimbus disable error... Patch 
 	.shutdown = tabla_shutdown,
+#endif
 	.hw_params = tabla_hw_params,
 	.set_sysclk = tabla_set_dai_sysclk,
 	.set_fmt = tabla_set_dai_fmt,
@@ -4923,7 +4974,7 @@ static int tabla_codec_enable_chmask(struct tabla_priv *tabla_p,
 				__func__);
 			ret = -EINVAL;
 		} else
-			ret = 0;
+		ret = 0;
 		break;
 	}
 	return ret;
@@ -4948,7 +4999,7 @@ static int tabla_codec_enable_slimrx(struct snd_soc_dapm_widget *w,
 			pm_runtime_mark_last_busy(tabla->dev->parent);
 			pm_runtime_put(tabla->dev->parent);
 		}
-		return 0;
+ 		return 0;
 	}
 
 	pr_debug("%s: %s %d\n", __func__, w->name, event);
@@ -5006,7 +5057,7 @@ static int tabla_codec_enable_slimrx(struct snd_soc_dapm_widget *w,
 			}
 			tabla_p->dai[j].rate = 0;
 			memset(tabla_p->dai[j].ch_num, 0, (sizeof(u32)*
-				tabla_p->dai[j].ch_tot));
+					tabla_p->dai[j].ch_tot));
 			tabla_p->dai[j].ch_tot = 0;
 
 			if ((tabla != NULL) &&
@@ -5014,8 +5065,8 @@ static int tabla_codec_enable_slimrx(struct snd_soc_dapm_widget *w,
 			    (tabla->dev->parent != NULL)) {
 				pm_runtime_mark_last_busy(tabla->dev->parent);
 				pm_runtime_put(tabla->dev->parent);
-			}
 		}
+	}
 	}
 	return ret;
 }
@@ -5085,6 +5136,9 @@ static int tabla_codec_enable_slimtx(struct snd_soc_dapm_widget *w,
 			ret = wcd9xxx_close_slim_sch_tx(tabla,
 						tabla_p->dai[j].ch_num,
 						tabla_p->dai[j].ch_tot);
+#ifdef CONFIG_SKY_SND_MODIFIER //20120618 jhsong : qct patch
+			usleep_range(5000, 5000);
+#endif
 			ret = tabla_codec_enable_chmask(tabla_p,
 						SND_SOC_DAPM_POST_PMD,
 						j);
@@ -5100,13 +5154,14 @@ static int tabla_codec_enable_slimtx(struct snd_soc_dapm_widget *w,
 			memset(tabla_p->dai[j].ch_num, 0, (sizeof(u32)*
 					tabla_p->dai[j].ch_tot));
 			tabla_p->dai[j].ch_tot = 0;
+
 			if ((tabla != NULL) &&
 			    (tabla->dev != NULL) &&
 			    (tabla->dev->parent != NULL)) {
 				pm_runtime_mark_last_busy(tabla->dev->parent);
 				pm_runtime_put(tabla->dev->parent);
-			}
 		}
+	}
 	}
 	return ret;
 }
@@ -5417,15 +5472,83 @@ static const struct snd_soc_dapm_widget tabla_dapm_widgets[] = {
 		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
 
 	SND_SOC_DAPM_MUX("SLIM TX1 MUX", SND_SOC_NOPM, 0, 0, &sb_tx1_mux),
+#if 0	// before 1031
+	// SD epos check FC miss //SND_SOC_DAPM_AIF_OUT_E("SLIM TX1", "AIF2 Capture", 0, SND_SOC_NOPM, 0,
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX1", "AIF1 Capture", 0, SND_SOC_NOPM, 0,
+				0, tabla_codec_enable_slimtx,
+				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+#endif
 	SND_SOC_DAPM_MUX("SLIM TX2 MUX", SND_SOC_NOPM, 0, 0, &sb_tx2_mux),
+#if 0	// before 1031
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX2", "AIF2 Capture", 0, SND_SOC_NOPM, 0,
+				0, tabla_codec_enable_slimtx,
+				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+#endif
 	SND_SOC_DAPM_MUX("SLIM TX3 MUX", SND_SOC_NOPM, 0, 0, &sb_tx3_mux),
+#if 0	// before 1031
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX3", "AIF3 Capture", 0, SND_SOC_NOPM, 0,
+				0, tabla_codec_enable_slimtx,
+				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+#if 1  // JMLEE 1021 Changes add
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX3", "AIF2 Capture", 0, SND_SOC_NOPM, 0,
+				0, tabla_codec_enable_slimtx,
+				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+#endif
+#endif
 	SND_SOC_DAPM_MUX("SLIM TX4 MUX", SND_SOC_NOPM, 0, 0, &sb_tx4_mux),
+#if 0	// before 1031
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX4", "AIF2 Capture", 0, SND_SOC_NOPM, 0,
+				0, tabla_codec_enable_slimtx,
+				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+#if 1  // JMLEE 1021 Changes add
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX4", "AIF2 Capture", 0, SND_SOC_NOPM, 0,
+				0, tabla_codec_enable_slimtx,
+				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+#endif
+#endif
 	SND_SOC_DAPM_MUX("SLIM TX5 MUX", SND_SOC_NOPM, 0, 0, &sb_tx5_mux),
+#if 0	// before 1031
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX5", "AIF3 Capture", 0, SND_SOC_NOPM, 0,
+				0, tabla_codec_enable_slimtx,
+				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+#endif
 	SND_SOC_DAPM_MUX("SLIM TX6 MUX", SND_SOC_NOPM, 0, 0, &sb_tx6_mux),
+#if 0	// before 1031
+	// SD epos check FC miss //SND_SOC_DAPM_AIF_OUT_E("SLIM TX6", "AIF2 Capture", 0, SND_SOC_NOPM, 0,
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX6", "AIF1 Capture", 0, SND_SOC_NOPM, 0,
+				0, tabla_codec_enable_slimtx,
+				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+#endif
 	SND_SOC_DAPM_MUX("SLIM TX7 MUX", SND_SOC_NOPM, 0, 0, &sb_tx7_mux),
+#if 0	// before 1031
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX7", "AIF1 Capture", 0, SND_SOC_NOPM, 0,
+				0, tabla_codec_enable_slimtx,
+				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+#endif
 	SND_SOC_DAPM_MUX("SLIM TX8 MUX", SND_SOC_NOPM, 0, 0, &sb_tx8_mux),
+	#if 0	// before 1031
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX8", "AIF1 Capture", 0, SND_SOC_NOPM, 0,
+				0, tabla_codec_enable_slimtx,
+				SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+#endif
 	SND_SOC_DAPM_MUX("SLIM TX9 MUX", SND_SOC_NOPM, 0, 0, &sb_tx9_mux),
+#if 0	// before 1031
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX9", "AIF1 Capture", NULL, SND_SOC_NOPM,
+			0, 0, tabla_codec_enable_slimtx,
+			SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+#if 1  // JMLEE 1021 Changes add
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX9", "AIF2 Capture", NULL, SND_SOC_NOPM,
+			0, 0, tabla_codec_enable_slimtx,
+			SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+
+#endif
+#endif
 	SND_SOC_DAPM_MUX("SLIM TX10 MUX", SND_SOC_NOPM, 0, 0, &sb_tx10_mux),
+	#if 0	// before 1031
+	SND_SOC_DAPM_AIF_OUT_E("SLIM TX10", "AIF1 Capture", NULL, SND_SOC_NOPM,
+			0, 0, tabla_codec_enable_slimtx,
+			SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+#endif
 
 	/* Digital Mic Inputs */
 	SND_SOC_DAPM_ADC_E("DMIC1", NULL, SND_SOC_NOPM, 0, 0,
@@ -5746,6 +5869,10 @@ static void tabla_codec_report_plug(struct snd_soc_codec *codec, int insertion,
 			}
 			pr_debug("%s: Reporting removal %d(%x)\n", __func__,
 				 jack_type, tabla->hph_status);
+                       
+            //HDJ_LS4_Sound_20120521
+            headset_jack_status = 0; //HDJ
+            //HDJ_LS4_Sound_20120521_END
 			tabla_snd_soc_jack_report(tabla,
 						  tabla->mbhc_cfg.headset_jack,
 						  tabla->hph_status,
@@ -5786,6 +5913,9 @@ static void tabla_codec_report_plug(struct snd_soc_codec *codec, int insertion,
 		if (tabla->mbhc_cfg.headset_jack) {
 			pr_debug("%s: Reporting insertion %d(%x)\n", __func__,
 				 jack_type, tabla->hph_status);
+            //HDJ_LS4_Sound_20120521
+            headset_jack_status = jack_type; 
+            //HDJ_LS4_Sound_20120521_END
 			tabla_snd_soc_jack_report(tabla,
 						  tabla->mbhc_cfg.headset_jack,
 						  tabla->hph_status,
@@ -6361,37 +6491,33 @@ void tabla_mbhc_init(struct snd_soc_codec *codec)
 			    tabla->mbhc_cfg.micbias);
 }
 
-static bool tabla_mbhc_fw_validate(const void *data, size_t size)
+static bool tabla_mbhc_fw_validate(const struct firmware *fw)
 {
 	u32 cfg_offset;
 	struct tabla_mbhc_imped_detect_cfg *imped_cfg;
 	struct tabla_mbhc_btn_detect_cfg *btn_cfg;
-	struct firmware_cal fw;
 
-	fw.data = (void *)data;
-	fw.size = size;
-
-	if (fw.size < TABLA_MBHC_CAL_MIN_SIZE)
+	if (fw->size < TABLA_MBHC_CAL_MIN_SIZE)
 		return false;
 
 	/* previous check guarantees that there is enough fw data up
 	 * to num_btn
 	 */
-	btn_cfg = TABLA_MBHC_CAL_BTN_DET_PTR(fw.data);
-	cfg_offset = (u32) ((void *) btn_cfg - (void *) fw.data);
-	if (fw.size < (cfg_offset + TABLA_MBHC_CAL_BTN_SZ(btn_cfg)))
+	btn_cfg = TABLA_MBHC_CAL_BTN_DET_PTR(fw->data);
+	cfg_offset = (u32) ((void *) btn_cfg - (void *) fw->data);
+	if (fw->size < (cfg_offset + TABLA_MBHC_CAL_BTN_SZ(btn_cfg)))
 		return false;
 
 	/* previous check guarantees that there is enough fw data up
 	 * to start of impedance detection configuration
 	 */
-	imped_cfg = TABLA_MBHC_CAL_IMPED_DET_PTR(fw.data);
-	cfg_offset = (u32) ((void *) imped_cfg - (void *) fw.data);
+	imped_cfg = TABLA_MBHC_CAL_IMPED_DET_PTR(fw->data);
+	cfg_offset = (u32) ((void *) imped_cfg - (void *) fw->data);
 
-	if (fw.size < (cfg_offset + TABLA_MBHC_CAL_IMPED_MIN_SZ))
+	if (fw->size < (cfg_offset + TABLA_MBHC_CAL_IMPED_MIN_SZ))
 		return false;
 
-	if (fw.size < (cfg_offset + TABLA_MBHC_CAL_IMPED_SZ(imped_cfg)))
+	if (fw->size < (cfg_offset + TABLA_MBHC_CAL_IMPED_SZ(imped_cfg)))
 		return false;
 
 	return true;
@@ -6456,6 +6582,32 @@ static int tabla_get_button_mask(const int btn)
 	return mask;
 }
 
+#ifdef CONFIG_SKY_SND_HEADSET_BUTTON_ADC  //20121119 jhsong : #8378522# test code headset button adc level check
+static int proc_debug_wcd9310_get_hsADC(char *page, char **start, off_t offset,
+					int count, int *eof, void *data)
+{   
+    *eof = 1;  
+    return sprintf(page, "%d\n", mv_s_backup);
+}
+
+static void create_hs_button_testmenu_entries(void)
+{
+ 	struct proc_dir_entry *ent;
+
+	wcd9310_headset_button_dir = proc_mkdir("tabla_codec", NULL);
+
+	if (wcd9310_headset_button_dir == NULL) {
+		pr_err("Unable to create /proc/tabla_codec directory\n");
+	}
+
+	ent = create_proc_entry("hs_button_id", S_IRUGO, wcd9310_headset_button_dir);
+	if (ent == NULL) 
+		pr_err("Unable to create /proc/hs_button_id entry\n");
+	
+	ent->read_proc = proc_debug_wcd9310_get_hsADC;
+}
+#endif
+
 static irqreturn_t tabla_dce_handler(int irq, void *data)
 {
 	int i, mask;
@@ -6519,18 +6671,23 @@ static irqreturn_t tabla_dce_handler(int irq, void *data)
 	btnmeas[meas++] = tabla_determine_button(priv, mv_s);
 	pr_debug("%s: meas HW - DCE %x,%d,%d button %d\n", __func__,
 		 dce, mv, mv_s, btnmeas[0]);
+
+#ifdef CONFIG_SKY_SND_HEADSET_BUTTON_ADC  //20121119 jhsong : #8378522# test code headset button adc level check
+	mv_s_backup = mv_s;
+#endif
+
 	if (n_btn_meas == 0) {
-		sta = tabla_codec_read_sta_result(codec);
+			sta = tabla_codec_read_sta_result(codec);
 		stamv_s = stamv = tabla_codec_sta_dce_v(codec, 0, sta);
-		if (vddio)
+			if (vddio)
 			stamv_s = tabla_scale_v_micb_vddio(priv, stamv, false);
 		btn = tabla_determine_button(priv, stamv_s);
 		pr_debug("%s: meas HW - STA %x,%d,%d button %d\n", __func__,
 			 sta, stamv, stamv_s, btn);
 		BUG_ON(meas != 1);
 		if (btnmeas[0] != btn)
-			btn = -1;
-	}
+				btn = -1;
+		}
 
 	/* determine pressed button */
 	for (; ((d->n_btn_meas) && (meas < (d->n_btn_meas + 1))); meas++) {
@@ -6572,12 +6729,21 @@ static irqreturn_t tabla_dce_handler(int irq, void *data)
 		mask = tabla_get_button_mask(btn);
 		priv->buttons_pressed |= mask;
 		wcd9xxx_lock_sleep(core);
+#if 1 //FEATURE_PANTECH_SND_DOMESTIC : Headset volume key delay
+		if (schedule_delayed_work(&priv->mbhc_btn_dwork,
+					  msecs_to_jiffies(2)) == 0) {
+			WARN(1, "Button pressed twice without release"
+			     "event\n");
+			wcd9xxx_unlock_sleep(core);
+		}
+#else
 		if (schedule_delayed_work(&priv->mbhc_btn_dwork,
 					  msecs_to_jiffies(400)) == 0) {
 			WARN(1, "Button pressed twice without release"
 			     "event\n");
 			wcd9xxx_unlock_sleep(core);
 		}
+#endif		
 	} else {
 		pr_debug("%s: bogus button press, too short press?\n",
 			 __func__);
@@ -7919,26 +8085,6 @@ static int tabla_mbhc_init_and_calibrate(struct tabla_priv *tabla)
 	return ret;
 }
 
-static
-struct firmware_cal *get_hwdep_fw_cal(struct snd_soc_codec *codec,
-			enum wcd_cal_type type)
-{
-	struct tabla_priv *tabla;
-	struct firmware_cal *hwdep_cal;
-
-	if (!codec) {
-		pr_err("%s: NULL codec pointer\n", __func__);
-		return NULL;
-	}
-	tabla = snd_soc_codec_get_drvdata(codec);
-	hwdep_cal = wcdcal_get_fw_cal(tabla->fw_data, type);
-	if (!hwdep_cal) {
-               dev_err(codec->dev, "%s: cal not sent by %d\n",
-					__func__, type);
-		return NULL;
-	}
-	return hwdep_cal;
-}
 static void mbhc_fw_read(struct work_struct *work)
 {
 	struct delayed_work *dwork;
@@ -7946,8 +8092,6 @@ static void mbhc_fw_read(struct work_struct *work)
 	struct snd_soc_codec *codec;
 	const struct firmware *fw;
 	int ret = -1, retry = 0;
-	struct firmware_cal *fw_data = NULL;
-	bool use_default_cal = false;
 
 	dwork = to_delayed_work(work);
 	tabla = container_of(dwork, struct tabla_priv, mbhc_firmware_dwork);
@@ -7955,18 +8099,12 @@ static void mbhc_fw_read(struct work_struct *work)
 
 	while (retry < MBHC_FW_READ_ATTEMPTS) {
 		retry++;
-		pr_err("%s:Attempt %d to request MBHC firmware\n",
-					__func__, retry);
-		fw_data = get_hwdep_fw_cal(codec,
-					WCD9XXX_MBHC_CAL);
-		if (!fw_data)
-			ret = request_firmware(&fw, "wcd9310/wcd9310_mbhc.bin",
+		pr_info("%s:Attempt %d to request MBHC firmware\n",
+			__func__, retry);
+		ret = request_firmware(&fw, "wcd9310/wcd9310_mbhc.bin",
 					codec->dev);
-		/*
-		* if request_firmware and hwdep cal both fail then
-		* retry for few times before bailing out
-		*/
-		if ((ret != 0) && !fw_data) {
+
+		if (ret != 0) {
 			usleep_range(MBHC_FW_READ_TIMEOUT,
 				     MBHC_FW_READ_TIMEOUT);
 		} else {
@@ -7975,43 +8113,16 @@ static void mbhc_fw_read(struct work_struct *work)
 		}
 	}
 
-	if (!fw_data)
-		pr_debug("%s: using request_firmware\n", __func__);
-	else
-		pr_debug("%s: using hwdep cal\n", __func__);
-	if (ret != 0 && !fw_data) {
-
+	if (ret != 0) {
 		pr_err("%s: Cannot load MBHC firmware use default cal\n",
-			 __func__);
-		use_default_cal = true;
-	}
-	if (!use_default_cal) {
-		const void *data;
-		size_t size;
-
-	if (fw_data) {
-		data = fw_data->data;
-		size = fw_data->size;
-	} else {
-		data = fw->data;
-		size = fw->size;
-	}
-	if (tabla_mbhc_fw_validate(data, size) == false) {
+			__func__);
+	} else if (tabla_mbhc_fw_validate(fw) == false) {
 		pr_err("%s: Invalid MBHC cal data size use default cal\n",
-				 __func__);
-		if (!fw_data)
-			release_firmware(fw);
-		} else {
-			if (fw_data) {
-				tabla->mbhc_cfg.calibration =
-						(void *)fw_data->data;
-				tabla->mbhc_cal = fw_data;
-			} else {
-				tabla->mbhc_cfg.calibration =
-						(void *)fw->data;
-				tabla->mbhc_fw = fw;
-			}
-		}
+			 __func__);
+		release_firmware(fw);
+	} else {
+		tabla->mbhc_cfg.calibration = (void *)fw->data;
+		tabla->mbhc_fw = fw;
 	}
 
 	(void) tabla_mbhc_init_and_calibrate(tabla);
@@ -8054,20 +8165,12 @@ int tabla_hs_detect(struct snd_soc_codec *codec,
 	INIT_WORK(&tabla->hphrocp_work, hphrocp_off_report);
 	INIT_DELAYED_WORK(&tabla->mbhc_insert_dwork, mbhc_insert_work);
 
-	if ((!tabla->mbhc_cfg.read_fw_bin)||
-		(tabla->mbhc_cfg.read_fw_bin && tabla->mbhc_fw) ||
-		(tabla->mbhc_cfg.read_fw_bin && tabla->mbhc_cal)) {
+	if (!tabla->mbhc_cfg.read_fw_bin)
 		rc = tabla_mbhc_init_and_calibrate(tabla);
-	}
-	else {
-		if (!tabla->mbhc_fw || !tabla->mbhc_cal)
-			schedule_delayed_work(&tabla->mbhc_firmware_dwork,
+	else
+		schedule_delayed_work(&tabla->mbhc_firmware_dwork,
 				      usecs_to_jiffies(MBHC_FW_READ_TIMEOUT));
-		else
-			pr_err("%s: Skipping to read mbhc fw, 0x%p 0x%p\n",
-				__func__, tabla->mbhc_fw, tabla->mbhc_cal);
 
-	}
 	return rc;
 }
 EXPORT_SYMBOL_GPL(tabla_hs_detect);
@@ -8152,6 +8255,8 @@ static int tabla_handle_pdata(struct tabla_priv *tabla)
 		pdata->micbias.cfilt2_mv);
 	k3 = tabla_find_k_value(pdata->micbias.ldoh_v,
 		pdata->micbias.cfilt3_mv);
+
+	pr_err("[JIMMY] %s: ldoh_v = %d, cfilt2_mv = %d, k2 = %d\n", __func__, pdata->micbias.ldoh_v, pdata->micbias.cfilt2_mv, k2);	//Jimmy
 
 	if (IS_ERR_VALUE(k1) || IS_ERR_VALUE(k2) || IS_ERR_VALUE(k3)) {
 		rc = -EINVAL;
@@ -8407,6 +8512,10 @@ static const struct tabla_reg_mask_val tabla_codec_reg_init_val[] = {
 	/* config DMIC clk to CLK_MODE_1 (3.072Mhz@12.88Mhz mclk) */
 	{TABLA_A_CDC_CLK_DMIC_CTL, 0x2A, 0x2A},
 
+
+	/* set to capless mode by default */
+	{TABLA_A_TX_5_6_EN, 0x11, 0x00},
+	
 };
 
 static const struct tabla_reg_mask_val tabla_1_x_codec_reg_init_val[] = {
@@ -8495,7 +8604,7 @@ static ssize_t codec_debug_write(struct file *filp,
 	if (tabla->no_mic_headset_override && tabla->mbhc_polling_active) {
 		tabla_codec_pause_hs_polling(tabla->codec);
 		tabla_codec_start_hs_polling(tabla->codec);
-	}
+}
 	TABLA_RELEASE_LOCK(tabla->codec_resource_lock);
 	return cnt;
 }
@@ -8594,8 +8703,7 @@ static int tabla_codec_probe(struct snd_soc_codec *codec)
 	tabla = kzalloc(sizeof(struct tabla_priv), GFP_KERNEL);
 	if (!tabla) {
 		dev_err(codec->dev, "Failed to allocate private data\n");
-		goto err_nomem_slimch;
-
+		return -ENOMEM;
 	}
 	for (i = 0 ; i < NUM_DECIMATORS; i++) {
 		tx_hpf_work[i].tabla = tabla;
@@ -8645,19 +8753,6 @@ static int tabla_codec_probe(struct snd_soc_codec *codec)
 	if (IS_ERR_VALUE(ret)) {
 		pr_err("%s: bad pdata\n", __func__);
 		goto err_pdata;
-	}
-	tabla->fw_data = kzalloc(sizeof(*(tabla->fw_data)), GFP_KERNEL);
-	if (!tabla->fw_data) {
-		dev_err(codec->dev, "Failed to allocate fw_data\n");
-		goto err_nomem_slimch;
-	}
-	set_bit(WCD9XXX_ANC_CAL, tabla->fw_data->cal_bit);
-	set_bit(WCD9XXX_MBHC_CAL, tabla->fw_data->cal_bit);
-	ret = wcd_cal_create_hwdep(tabla->fw_data,
-					WCD9XXX_CODEC_HWDEP_NODE, codec);
-	if (ret < 0) {
-		dev_err(codec->dev, "%s hwdep failed %d\n", __func__, ret);
-		goto err_hwdep;
 	}
 
 //	snd_soc_add_codec_controls(codec, tabla_snd_controls,
@@ -8731,6 +8826,10 @@ static int tabla_codec_probe(struct snd_soc_codec *codec)
 			TABLA_IRQ_MBHC_POTENTIAL);
 		goto err_potential_irq;
 	}
+
+#ifdef CONFIG_SKY_SND_HEADSET_BUTTON_ADC  //20121119 jhsong : #8378522# test code headset button adc level check
+	create_hs_button_testmenu_entries();
+#endif
 
 	ret = wcd9xxx_request_irq(codec->control_data, TABLA_IRQ_MBHC_RELEASE,
 		tabla_release_handler, "Button Release detect", tabla);
@@ -8840,10 +8939,7 @@ err_potential_irq:
 	wcd9xxx_free_irq(codec->control_data, TABLA_IRQ_MBHC_REMOVAL, tabla);
 err_remove_irq:
 	wcd9xxx_free_irq(codec->control_data, TABLA_IRQ_MBHC_INSERTION, tabla);
-err_hwdep:
 err_insert_irq:
-	kfree(tabla->fw_data);
-err_nomem_slimch:
 err_pdata:
 	mutex_destroy(&tabla->codec_resource_lock);
 	kfree(tabla);
@@ -8865,7 +8961,7 @@ static int tabla_codec_remove(struct snd_soc_codec *codec)
 	tabla_codec_disable_clock_block(codec);
 	TABLA_RELEASE_LOCK(tabla->codec_resource_lock);
 	tabla_codec_enable_bandgap(codec, TABLA_BANDGAP_OFF);
-	if (tabla->mbhc_fw||tabla->mbhc_cal)
+	if (tabla->mbhc_fw)
 		release_firmware(tabla->mbhc_fw);
 	for (i = 0; i < ARRAY_SIZE(tabla_dai); i++)
 		kfree(tabla->dai[i].ch_num);
@@ -8875,7 +8971,6 @@ static int tabla_codec_remove(struct snd_soc_codec *codec)
 	debugfs_remove(tabla->debugfs_mbhc);
 #endif
 	kfree(tabla);
-	kfree(tabla->fw_data);
 	return 0;
 }
 static struct snd_soc_codec_driver soc_codec_dev_tabla = {

@@ -39,6 +39,7 @@ struct led_classdev {
 	/* Upper 16 bits reflect control information */
 #define LED_CORE_SUSPENDRESUME	(1 << 16)
 
+#define LED_ENABLE_POWER_SAVE	(1 << 8)
 	/* Set LED brightness level */
 	/* Must not sleep, use a workqueue if needed */
 	void		(*brightness_set)(struct led_classdev *led_cdev,
@@ -54,9 +55,10 @@ struct led_classdev {
 	 * Deactivate blinking again when the brightness is set to a fixed
 	 * value via the brightness_set() callback.
 	 */
-	int		(*blink_set)(struct led_classdev *led_cdev,
-				     unsigned long *delay_on,
-				     unsigned long *delay_off);
+	int (*blink_set) (struct led_classdev *led_cdev, 
+			unsigned long *delay_on, 
+			unsigned long *delay_off, 
+			int led_percent_level);
 
 	struct device		*dev;
 	struct list_head	 node;			/* LED Device list */

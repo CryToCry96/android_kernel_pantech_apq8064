@@ -373,12 +373,22 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 		   -Werror-implicit-function-declaration \
 		   -Wno-format-security \
 		   -fno-delete-null-pointer-checks
+#// 20120105, albatros, imei ÁÖ¼Ò°ªÀÇ °ø¿ëÀ¸·Î »ç¿ëÀ» À§ÇØ¼­
+
+LINUXINCLUDE += -I$(srctree)/include/pantech
 KBUILD_AFLAGS_KERNEL :=
 KBUILD_CFLAGS_KERNEL :=
 KBUILD_AFLAGS   := -D__ASSEMBLY__
 KBUILD_AFLAGS_MODULE  := -DMODULE
 KBUILD_CFLAGS_MODULE  := -DMODULE
 KBUILD_LDFLAGS_MODULE := -T $(srctree)/scripts/module-common.lds
+######################################################################
+# PANTECH_KERNEL_FLAGS
+######################################################################
+
+PANTECH_BUILD_SYSTEM := $(srctree)/include/pantech
+include $(PANTECH_BUILD_SYSTEM)/pantech_config.mk
+KBUILD_CFLAGS += $(PANTECH_KERNEL_FLAGS)
 
 # Read KERNELRELEASE from include/config/kernel.release (if it exists)
 KERNELRELEASE = $(shell cat include/config/kernel.release 2> /dev/null)
@@ -563,9 +573,9 @@ endif # $(dot-config)
 all: vmlinux
 
 ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
-KBUILD_CFLAGS	+= -Os
+KBUILD_CFLAGS	+= -Os $(call cc-disable-warning,maybe-uninitialized,)
 else
-KBUILD_CFLAGS	+= -O2
+KBUILD_CFLAGS	+= -O2 $(call cc-disable-warning,maybe-uninitialized,)
 endif
 
 include $(srctree)/arch/$(SRCARCH)/Makefile

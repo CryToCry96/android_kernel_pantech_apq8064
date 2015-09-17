@@ -128,6 +128,14 @@ static char *static_command_line;
 static char *execute_command;
 static char *ramdisk_execute_command;
 
+#ifdef CONFIG_PANTECH_SMB347_CHARGER
+static unsigned int battchg_pause_offline = 0;
+unsigned int pantech_charging_status(void)
+{
+	return battchg_pause_offline;
+}
+EXPORT_SYMBOL(pantech_charging_status);
+#endif
 /*
  * If set, this is an indication to the drivers that reset the underlying
  * device before going ahead with the initialization otherwise driver might
