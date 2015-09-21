@@ -65,7 +65,7 @@ enum {
 	QUP_I2C_STATUS          = 0x404,
 };
 
-/* QUP States and reset values */
+//p16619 piezo
 enum {
 	QUP_MX_OUTPUT_COUNT           = 0x100,
 	QUP_MX_OUTPUT_COUNT_CURRENT           = 0x104,
@@ -246,6 +246,8 @@ qup_i2c_interrupt(int irq, void *devid)
 		if((status & 0xF0000) == 0x30000) sent_cnt += 1;
 		if(sent_cnt > 6) sent_cnt -= 1;
 	       if(sent_cnt > 13) sent_cnt -= 1;	      
+//		if(sent_cnt > 20) sent_cnt -= 1;
+
 		err = status;
 		/* Clear Error interrupt if it's a level triggered interrupt*/
 		if (dev->num_irqs == 1) {
@@ -803,6 +805,7 @@ qup_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 	pm_runtime_get_sync(dev->dev);
 	mutex_lock(&dev->mlock);
 
+//p16619 piezo
 	sent_cnt = 0;
 	
 	if (dev->suspended) {
@@ -1564,4 +1567,3 @@ static void __exit qup_i2c_exit_driver(void)
 	platform_driver_unregister(&qup_i2c_driver);
 }
 module_exit(qup_i2c_exit_driver);
-
