@@ -72,8 +72,6 @@ obj-$(CONFIG_MSM_MEMORY_LOW_POWER_MODE_SUSPEND_DEEP_POWER_DOWN) \
 obj-$(CONFIG_PMIC8058_XOADC) += pmic8058-xoadc.o
 obj-$(CONFIG_QSEECOM) += qseecom.o
 obj-$(CONFIG_QFP_FUSE) += qfp_fuse.o
-#Le Hoang disable this for fix vibrator A860
-#obj-y += tspdrv/
 
 obj-$(CONFIG_PIEZO) += ti_drv2665.o
 #20140124 LS4_WIFI Warfs WiFi Porting KiKat 
