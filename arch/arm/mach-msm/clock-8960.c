@@ -5407,6 +5407,8 @@ static struct clk_lookup msm_clocks_8064[] = {
 	CLK_LOOKUP("ref_clk",	tsif_ref_clk.c,	"msm_tspp.0"),
 #if defined(CONFIG_SKY_DMB_TSIF_IF)
     CLK_LOOKUP("iface_clk",   tsif_p_clk.c,   "msm_tsif.0"),
+#else
+	CLK_LOOKUP("iface_clk",		tsif_p_clk.c,		""),
 #endif
 	CLK_LOOKUP("iface_clk",		tsif_p_clk.c,		"msm_tspp.0"),
 	CLK_LOOKUP("iface_clk",		usb_fs1_p_clk.c,	""),

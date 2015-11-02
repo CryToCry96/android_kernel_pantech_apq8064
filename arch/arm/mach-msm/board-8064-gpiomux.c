@@ -62,8 +62,10 @@ struct msm_gpiomux_config apq8064_ethernet_configs[] = {
 /* Chip selects for SPI clients */
 static struct gpiomux_setting gpio_spi_cs_config = {
 	.func = GPIOMUX_FUNC_GPIO,
-	.drv = GPIOMUX_DRV_12MA,
-	.pull = GPIOMUX_PULL_UP,
+	.drv = GPIOMUX_DRV_2MA,		//p13795
+	//.drv = GPIOMUX_DRV_12MA,
+	.pull = GPIOMUX_PULL_DOWN,	//p13795
+	//.pull = GPIOMUX_PULL_UP,
 };
 
 /* Chip selects for EPM SPI clients */
