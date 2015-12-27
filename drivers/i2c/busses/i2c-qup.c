@@ -36,7 +36,7 @@
 #include <linux/gpio.h>
 #include <linux/of.h>
 #include <linux/of_i2c.h>
-#include <linux/ti_drv2665.h>
+//#include <linux/ti_drv2665.h>
 
 MODULE_LICENSE("GPL v2");
 MODULE_VERSION("0.2");
@@ -180,15 +180,15 @@ struct qup_i2c_dev {
 	struct mutex                 mlock;
 	void                         *complete;
 	int                          i2c_gpios[ARRAY_SIZE(i2c_rsrcs)];
-	//p16619 piezo
-	//int				sent_cnt;
+	// IMMR
+	int				sent_cnt;
 };
-static int sent_cnt=0;
+//static int sent_cnt=0;
 //p16619 piezo
-int get_lastPacket(void){
-    return sent_cnt;
-}
-EXPORT_SYMBOL(get_lastPacket);
+//int get_lastPacket(void){
+//    return sent_cnt;
+//}
+//EXPORT_SYMBOL(get_lastPacket);
 
 #ifdef DEBUG
 static void
@@ -212,8 +212,7 @@ static irqreturn_t
 qup_i2c_interrupt(int irq, void *devid)
 {
 	struct qup_i2c_dev *dev = devid;
-	//p16619 piezo
-	uint32_t mx_cnt_cr = 0;
+	uint32_t mx_cnt_cr = readl_relaxed(dev->base + QUP_MX_OUTPUT_COUNT_CURRENT);	
 	uint32_t status = 0;
 	uint32_t status1 = 0;
 	uint32_t op_flgs = 0;
@@ -240,13 +239,12 @@ qup_i2c_interrupt(int irq, void *devid)
 		//dev_err(dev->dev, "QUP: I2C status flags :0x%x, irq:%d\n",
 		//	status, irq);		
 		
-		//p16619 piezo
-        mx_cnt_cr = readl_relaxed(dev->base + QUP_MX_OUTPUT_COUNT_CURRENT);	
-		sent_cnt = mx_cnt_cr;
-		if((status & 0xF0000) == 0x30000) sent_cnt += 1;
-		if(sent_cnt > 6) sent_cnt -= 1;
-	       if(sent_cnt > 13) sent_cnt -= 1;	      
-//		if(sent_cnt > 20) sent_cnt -= 1;
+		//IMMR
+		dev->sent_cnt = mx_cnt_cr;
+		if((status & 0xF0000) == 0x30000) dev->sent_cnt += 1;
+		if(dev->sent_cnt > 6) dev->sent_cnt -= 1;
+	       if(dev->sent_cnt > 13) dev->sent_cnt -= 1;	      
+//		if(dev->sent_cnt > 20) dev->sent_cnt -= 1;
 
 		err = status;
 		/* Clear Error interrupt if it's a level triggered interrupt*/
@@ -805,8 +803,8 @@ qup_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 	pm_runtime_get_sync(dev->dev);
 	mutex_lock(&dev->mlock);
 
-//p16619 piezo
-	sent_cnt = 0;
+// IMMR
+	dev->sent_cnt = 0;
 	
 	if (dev->suspended) {
 		mutex_unlock(&dev->mlock);
