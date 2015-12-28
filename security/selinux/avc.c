@@ -91,6 +91,10 @@ struct avc_callback_node {
 /* Exported via selinufs */
 unsigned int avc_cache_threshold = AVC_DEF_CACHE_THRESHOLD;
 
+#ifdef CONFIG_SECURITY_SELINUX_AVC_STATS
+DEFINE_PER_CPU(struct avc_cache_stats, avc_cache_stats) = { 0 };
+#endif
+
 static struct avc_cache avc_cache;
 static struct avc_callback_node *avc_callbacks;
 static struct kmem_cache *avc_node_cachep;
@@ -1216,7 +1220,7 @@ inline int avc_has_perm_noaudit(u32 ssid, u32 tsid,
 
 	denied = requested & ~(avd->allowed);
 	if (unlikely(denied))
-		rc = avc_denied(ssid, tsid, tclass, requested, flags, avd);
+		rc = avc_denied(ssid, tsid, tclass, requested, 0, flags, avd);
 
 	rcu_read_unlock();
 	return rc;
