@@ -60,6 +60,7 @@
 #ifdef CONFIG_PANTECH_LCD_GET_LCD_REV
 int mipi_renesas_fhd_manufature_ID_get(void);
 #endif
+
 static unsigned char *fbram;
 static unsigned char *fbram_phys;
 static int fbram_size;
@@ -105,7 +106,7 @@ extern unsigned long mdp_timer_duration;
 static int msm_fb_register(struct msm_fb_data_type *mfd);
 static int msm_fb_open(struct fb_info *info, int user);
 static int msm_fb_release(struct fb_info *info, int user);
-//static int msm_fb_release_all(struct fb_info *info, boolean is_all);
+static int msm_fb_release_all(struct fb_info *info, boolean is_all);
 static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 			      struct fb_info *info);
 static int msm_fb_stop_sw_refresher(struct msm_fb_data_type *mfd);
@@ -409,15 +410,18 @@ static ssize_t msm_fb_msm_fb_type(struct device *dev,
 	return ret;
 }
 
+
 #ifdef CONFIG_F_SKYDISP_CABC_CTRL
 static DEVICE_ATTR(cabc_ctl, S_IRUGO | S_IWUSR, msm_fb_cabc_show, msm_fb_cabc_store);
 #endif
 #ifdef CONFIG_PANTECH_LCD_SHARPNESS_CTRL
 static DEVICE_ATTR(sharpness_ctl, S_IRUGO | S_IWUSR, msm_fb_sharpness_show, msm_fb_sharpness_store);
 #endif
+
 static DEVICE_ATTR(msm_fb_type, S_IRUGO, msm_fb_msm_fb_type, NULL);
 static DEVICE_ATTR(msm_fb_fps_level, S_IRUGO | S_IWUSR | S_IWGRP, NULL, \
 				msm_fb_fps_level_change);
+
 #ifdef CONFIG_F_SKYDISP_CHECK_AND_SET_PANEL_POWER_ON
 static ssize_t msm_fb_check_panel_power_on(struct device *dev,
 		                          struct device_attribute *attr, char *buf)
@@ -500,6 +504,7 @@ static ssize_t msm_fb_set_panel_power_on(struct device *dev,
 }
 static DEVICE_ATTR(panel_power_on, S_IRUGO | S_IWUSR, msm_fb_check_panel_power_on, msm_fb_set_panel_power_on);
 #endif
+
 static struct attribute *msm_fb_attrs[] = {
 	&dev_attr_msm_fb_type.attr,
 #ifdef CONFIG_F_SKYDISP_CHECK_AND_SET_PANEL_POWER_ON
@@ -535,19 +540,19 @@ static void msm_fb_remove_sysfs(struct platform_device *pdev)
 	sysfs_remove_group(&mfd->fbi->dev->kobj, &msm_fb_attr_group);
 }
 
-#ifdef  CONFIG_F_SKYDISP_SHUTDOWN_BUGFIX
-static void mdss_fb_shutdown(struct platform_device *pdev)
-{
-    struct msm_fb_data_type *mfd = platform_get_drvdata(pdev);
-
-    mfd->shutdown_pending = true;
-    lock_fb_info(mfd->fbi);
-    mdss_fb_release_all(mfd->fbi, true);
-    unlock_fb_info(mfd->fbi);
-}
-#endif
 static void bl_workqueue_handler(struct work_struct *work);
 
+static void msm_fb_shutdown(struct platform_device *pdev)
+{
+       struct msm_fb_data_type *mfd = platform_get_drvdata(pdev);
+       if (IS_ERR_OR_NULL(mfd)) {
+               pr_err("MFD is Null");
+               return;
+       }
+       lock_fb_info(mfd->fbi);
+       msm_fb_release_all(mfd->fbi, true);
+       unlock_fb_info(mfd->fbi);
+}
 static int msm_fb_probe(struct platform_device *pdev)
 {
 	struct msm_fb_data_type *mfd;
@@ -987,11 +992,7 @@ static struct platform_driver msm_fb_driver = {
 	.suspend = msm_fb_suspend,
 	.resume = msm_fb_resume,
 #endif
-#ifdef  CONFIG_F_SKYDISP_SHUTDOWN_BUGFIX
-    .shutdown = mdss_fb_shutdown,
-#else
-	.shutdown = NULL,
-#endif
+	.shutdown = msm_fb_shutdown,
 	.driver = {
 		   /* Driver name must match the device name added in platform.c. */
 		   .name = "msm_fb",
@@ -2023,7 +2024,7 @@ static void msm_fb_free_base_pipe(struct msm_fb_data_type *mfd)
 extern int touch_init;
 #endif
 
-static int msm_fb_release(struct fb_info *info, int user)
+static int msm_fb_release_all(struct fb_info *info, boolean is_all)
 {
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
 	int ret = 0, bl_level = 0;
@@ -2035,7 +2036,10 @@ static int msm_fb_release(struct fb_info *info, int user)
 	}
 	msm_fb_pan_idle(mfd);
 
-	mfd->ref_cnt--;
+	do {
+	        mfd->ref_cnt--;
+		pm_runtime_put(info->dev);
+	} while (is_all && mfd->ref_cnt);
 
 	if (!mfd->ref_cnt) {
 		if (mfd->op_enable) {
@@ -2063,6 +2067,10 @@ static int msm_fb_release(struct fb_info *info, int user)
 
 	pm_runtime_put(info->dev);
 	return ret;
+}
+static int msm_fb_release(struct fb_info *info, int user)
+{
+        return msm_fb_release_all(info, false);
 }
 
 void msm_fb_wait_for_fence(struct msm_fb_data_type *mfd)
@@ -4684,3 +4692,4 @@ int msm_fb_v4l2_update(void *par,
 EXPORT_SYMBOL(msm_fb_v4l2_update);
 
 module_init(msm_fb_init);
+
