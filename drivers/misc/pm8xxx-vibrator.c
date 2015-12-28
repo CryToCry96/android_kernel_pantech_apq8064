@@ -10,6 +10,7 @@
  * GNU General Public License for more details.
  */
 
+#include <linux/device.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -45,6 +46,47 @@ struct pm8xxx_vib {
 };
 
 static struct pm8xxx_vib *vib_dev;
+static ssize_t pm8xxx_level_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct timed_output_dev *tdev = dev_get_drvdata(dev);
+	struct pm8xxx_vib *vib = container_of(tdev, struct pm8xxx_vib,
+							 timed_dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", vib->level);
+}
+
+static ssize_t pm8xxx_level_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct timed_output_dev *tdev = dev_get_drvdata(dev);
+	struct pm8xxx_vib *vib = container_of(tdev, struct pm8xxx_vib,
+							 timed_dev);
+	int val;
+	int rc;
+
+	rc = kstrtoint(buf, 10, &val);
+	if (rc) {
+		pr_err("%s: error getting level\n", __func__);
+		return -EINVAL;
+	}
+
+	if (val < VIB_MIN_LEVEL_mV / 100) {
+		pr_err("%s: level %d not in range (%d - %d), using min.", __func__, val, VIB_MIN_LEVEL_mV / 100, VIB_MAX_LEVEL_mV / 100);
+		val = VIB_MIN_LEVEL_mV / 100;
+	} else if (val > VIB_MAX_LEVEL_mV / 100) {
+		pr_err("%s: level %d not in range (%d - %d), using max.", __func__, val, VIB_MIN_LEVEL_mV / 100, VIB_MAX_LEVEL_mV / 100);
+		val = VIB_MAX_LEVEL_mV / 100;
+	}
+
+	vib->level = val;
+
+	return strnlen(buf, count);
+}
+
+static DEVICE_ATTR(amp, S_IRUGO | S_IWUSR, pm8xxx_level_show, pm8xxx_level_store);
 
 int pm8xxx_vibrator_config(struct pm8xxx_vib_config *vib_config)
 {
@@ -120,7 +162,7 @@ static int pm8xxx_vib_set(struct pm8xxx_vib *vib, int on)
 	u8 val;
 
 	if (on) {
-		val = vib->reg_vib_drv;
+                val = 0;
 		val |= ((vib->level << VIB_DRV_SEL_SHIFT) & VIB_DRV_SEL_MASK);
 		rc = pm8xxx_vib_write_u8(vib, val, VIB_DRV);
 		if (rc < 0)
@@ -153,9 +195,9 @@ retry:
 		goto retry;
 	}
 
-	if (value == 0)
+	if (value == 0) {
 		vib->state = 0;
-	else {
+	} else {
 		value = (value > vib->pdata->max_timeout_ms ?
 				 vib->pdata->max_timeout_ms : value);
 		vib->state = 1;
@@ -270,6 +312,9 @@ static int __devinit pm8xxx_vib_probe(struct platform_device *pdev)
 	if (rc < 0)
 		goto err_read_vib;
 
+	rc = device_create_file(vib->dev, &dev_attr_amp);
+	if (rc < 0)
+		goto err_read_vib;
 	pm8xxx_vib_enable(&vib->timed_dev, pdata->initial_vibrate_ms);
 
 	platform_set_drvdata(pdev, vib);
