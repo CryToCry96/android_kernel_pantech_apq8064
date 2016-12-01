@@ -41,7 +41,7 @@ config F_SKYDISP_CE_TUNING_M2
 # Also, In LK, silent boot is implemented. See define DISPLAY_SILENT_BOOT in LK.
 config F_SKYDISP_SILENT_BOOT
 	bool     
-	default n
+	default y
 
 # Offline charging need a dark-brightness backlight for low power consumption.
 # When offline charging, change bl table and then, can set very low backlight brightness. 

@@ -640,9 +640,7 @@ struct excute_work {
 struct excute_work *ssr_noti_work;
 #endif
 
-#ifdef CONFIG_PANTECH_DEBUG
 extern int wifissr;
-#endif
 int subsystem_restart_dev(struct subsys_device *dev)
 {
 	const char *name = dev->desc->name;
@@ -658,13 +656,9 @@ int subsystem_restart_dev(struct subsys_device *dev)
 		return -EBUSY;
 	}
 
-#ifdef CONFIG_PANTECH_DEBUG
     // wifi ssrmode check
     if( 1 == wifissr &&
         (!strncmp(name, "wcnss", 5) || !strncmp(name, "riva", 4)) )
-#else
-    if(!strncmp(name, "wcnss", 5) || !strncmp(name, "riva", 4))
-#endif
     {
         restart_level = RESET_SUBSYS_INDEPENDENT;
     }
