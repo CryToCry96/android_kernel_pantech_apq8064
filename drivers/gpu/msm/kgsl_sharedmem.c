@@ -580,14 +580,14 @@ _kgsl_sharedmem_page_alloc(struct kgsl_memdesc *memdesc,
 			size_t size)
 {
 	int order, ret = 0;
+<<<<<<< HEAD
 	int page_size, sglen_alloc, sglen = 0;
 	size_t len;
+=======
+	int len, page_size, sglen_alloc, sglen = 0;
+>>>>>>> parent of 83f1da6... msm: kgsl: Add missing checks for alloc size and sglen
 	void *ptr;
 	unsigned int align;
-
-	size = PAGE_ALIGN(size);
-	if (size == 0 || size > UINT_MAX)
-		return -EINVAL;
 
 	align = (memdesc->flags & KGSL_MEMALIGN_MASK) >> KGSL_MEMALIGN_SHIFT;
 
